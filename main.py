@@ -1,28 +1,28 @@
 import os
 import asyncio
-from datetime import datetime, timedelta
+import logging
+import json
+from datetime import datetime, timedelta, date
+import pytz
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-import pytz
-import random
-import json
 from keep_alive import keep_alive
 
-# Load motivational messages
-with open("motivation.json", "r") as f:
-    motivation_data = json.load(f)
+# Enable logging
+logging.basicConfig(level=logging.INFO)
+
+# Load environment variables
+api_id = int(os.environ['API_ID'])
+api_hash = os.environ['API_HASH']
+session_str = os.environ['SESSION_STRING']
+
+# Initialize Telegram client
+client = TelegramClient(StringSession(session_str), api_id, api_hash)
 
 # Timezone
 tz = pytz.timezone("Africa/Lagos")
 
-# API credentials
-api_id = int(os.environ['API_ID'])
-api_hash = os.environ['API_HASH']
-session_string = os.environ['SESSION_STRING']
-
-client = TelegramClient(StringSession(session_string), api_id, api_hash)
-
-# Channels
+# Source and target channels
 SOURCE_CHANNELS = [
     'https://t.me/GaryGoldLegacy',
     'https://t.me/firepipsignals',
@@ -35,62 +35,86 @@ SOURCE_CHANNELS = [
 ]
 TARGET_CHANNEL = 'https://t.me/DonwiseVault'
 
-# Filters
-BLOCKED_WORDS = ['investment', 'bitcoin', 'btc']
-REQUIRED_WORDS = ['tp', 'sl', 'take profit', 'stop loss']
-daily_counter = 0
-last_reset = datetime.now(tz).date()
+# Signal tracking
+daily_signals = set()
+last_reset_date = None
 morning_sent = False
-motivational_index = 0
-sent_messages = set()
 
-def reset_daily():
-    global daily_counter, morning_sent, last_reset, motivational_index
+# --- DAILY RESET ---
+def reset_daily_state():
+    global daily_signals, last_reset_date, morning_sent
     today = datetime.now(tz).date()
-    if today != last_reset:
-        daily_counter = 0
+    if last_reset_date != today:
+        logging.info("🔁 New day: Resetting signal count and morning post status.")
+        daily_signals = set()
         morning_sent = False
-        motivational_index = (motivational_index + 1) % len(motivation_data)
-        last_reset = today
+        last_reset_date = today
 
-def is_valid_signal(msg: str) -> bool:
-    lower = msg.lower()
-    if any(block in lower for block in BLOCKED_WORDS):
-        return False
-    return any(req in lower for req in REQUIRED_WORDS)
+# --- MOTIVATIONAL POST ---
+def get_daily_motivation():
+    with open("motivational/motivation.json", "r") as f:
+        data = json.load(f)
+    day = (date.today().day % 28) or 28
+    return next((item for item in data if item["id"] == day), None)
 
-async def send_morning_motivation():
+async def send_morning_message():
     global morning_sent
-    if morning_sent:
-        return
-    data = motivation_data[motivational_index]
-    img_path = f"images/{data['id']}.jpg"
-    await client.send_file(TARGET_CHANNEL, img_path, caption=f"🌞 Good Morning Traders!\n\n_{data['text']}_\n\nGet ready, first signal drops shortly.")
-    morning_sent = True
+    if not morning_sent:
+        motivation = get_daily_motivation()
+        if motivation:
+            file_path = f"motivational/{motivation['image']}"
+            caption = (
+                f"🌞 Good Morning Donwise Vault!\n\n"
+                f"_{motivation['text']}_\n\n"
+                f"Are you ready for today's signals? Let's go! 💥"
+            )
+            await client.send_file(TARGET_CHANNEL, file=file_path, caption=caption, parse_mode='markdown')
+            logging.info("✅ Sent motivational post.")
+        morning_sent = True
 
+# --- SIGNAL VALIDATION ---
+def is_valid_signal(msg: str) -> bool:
+    msg_l = msg.lower()
+    if 'sl' in msg_l and 'tp' in msg_l:
+        return True
+    return False
+
+# --- FORWARD SIGNAL ---
 @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
-async def signal_handler(event):
-    global daily_counter
-    reset_daily()
+async def handler(event):
+    global daily_signals
+    reset_daily_state()
 
-    msg = event.message.message
-    if event.id in sent_messages or daily_counter >= 6:
+    if len(daily_signals) >= 6:
         return
+
+    if event.media:
+        return
+
+    msg = event.message.message.strip()
     if not is_valid_signal(msg):
         return
 
+    # Prevent duplicates
+    if msg in daily_signals:
+        logging.info("⚠️ Duplicate signal skipped.")
+        return
+
+    # Send motivational post if not already
     if not morning_sent:
-        await send_morning_motivation()
+        await send_morning_message()
 
-    captioned = f"{msg}\n\n_By @RealDonwise 🔥 | Donwise Copytrade Vault_"
-    await client.send_message(TARGET_CHANNEL, captioned, parse_mode='markdown')
-    sent_messages.add(event.id)
-    daily_counter += 1
+    # Tag and send signal
+    final_msg = f"{msg}\n\n_By @RealDonwise 🔥 | Donwise Copytrade Vault_"
+    await client.send_message(TARGET_CHANNEL, final_msg, parse_mode='markdown')
+    daily_signals.add(msg)
+    logging.info(f"📩 Forwarded signal: {msg[:40]}...")
 
+# --- RUN ---
 async def main():
     await client.start()
-    print("Bot is running...")
+    logging.info("🚀 Bot started.")
     await client.run_until_disconnected()
 
 keep_alive()
-asyncio.get_event_loop().run_until_complete(main())
+client.loop.run_until_complete(main())
