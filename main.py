@@ -2,11 +2,11 @@ import os
 import asyncio
 import logging
 import json
-from datetime import datetime, timedelta, date
+from datetime import datetime, date
 import pytz
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from keep_alive import keep_alive
+from keep_alive import keep_alive  # Assuming you have this for uptime
 
 # Enable logging
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +40,9 @@ daily_signals = set()
 last_reset_date = None
 morning_sent = False
 
+# Path to motivation.json in root folder
+MOTIVATION_JSON_PATH = "motivation.json"
+
 # --- DAILY RESET ---
 def reset_daily_state():
     global daily_signals, last_reset_date, morning_sent
@@ -50,34 +53,34 @@ def reset_daily_state():
         morning_sent = False
         last_reset_date = today
 
-# --- MOTIVATIONAL POST ---
+# --- GET DAILY MOTIVATION ---
 def get_daily_motivation():
-    with open("motivational/motivation.json", "r") as f:
+    with open(MOTIVATION_JSON_PATH, "r") as f:
         data = json.load(f)
     day = (date.today().day % 28) or 28
-    return next((item for item in data if item["id"] == day), None)
+    motivation = next((item for item in data if item["id"] == day), None)
+    return motivation
 
+# --- SEND MORNING MOTIVATIONAL MESSAGE ---
 async def send_morning_message():
     global morning_sent
     if not morning_sent:
         motivation = get_daily_motivation()
         if motivation:
-            file_path = f"motivational/{motivation['image']}"
+            file_path = motivation['image']  # <-- here: no folder, just filename like "1.jpg"
             caption = (
                 f"🌞 Good Morning Donwise Vault!\n\n"
                 f"_{motivation['text']}_\n\n"
                 f"Are you ready for today's signals? Let's go! 💥"
             )
             await client.send_file(TARGET_CHANNEL, file=file_path, caption=caption, parse_mode='markdown')
-            logging.info("✅ Sent motivational post.")
+            logging.info(f"✅ Sent motivational post with image {file_path}.")
         morning_sent = True
 
 # --- SIGNAL VALIDATION ---
 def is_valid_signal(msg: str) -> bool:
     msg_l = msg.lower()
-    if 'sl' in msg_l and 'tp' in msg_l:
-        return True
-    return False
+    return 'sl' in msg_l and 'tp' in msg_l
 
 # --- FORWARD SIGNAL ---
 @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
@@ -95,16 +98,13 @@ async def handler(event):
     if not is_valid_signal(msg):
         return
 
-    # Prevent duplicates
     if msg in daily_signals:
         logging.info("⚠️ Duplicate signal skipped.")
         return
 
-    # Send motivational post if not already
     if not morning_sent:
         await send_morning_message()
 
-    # Tag and send signal
     final_msg = f"{msg}\n\n_By @RealDonwise 🔥 | Donwise Copytrade Vault_"
     await client.send_message(TARGET_CHANNEL, final_msg, parse_mode='markdown')
     daily_signals.add(msg)
